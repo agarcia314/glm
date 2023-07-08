@@ -1,0 +1,372 @@
+---
+title: "glm_project"
+author: "Alexandre GARCIA"
+date: '2023-06-11'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Etude des donnees
+
+Il s'agit d'une time series en frequence journaliere. la variable d'interet est binaire.
+Les fichiers train (1180 obs) et test (290 obs) s'entrecroisent et sont assez uniformément répartis sur le range de dates, cela a donc du sens de conserver l'information chronologique fine car on ne vise pas un modèle général.
+
+
+```{r, warning=FALSE}
+data_dir = "~/020_dauphine_stats/cours_glm/Modèles linéaires généralisés - R. RYDER-20230602/Projet"
+#rm(list=ls())
+setwd(data_dir)
+
+library(corrplot)
+library(dplyr)
+x_train <- read.csv("meteo.train.csv")
+x_test  <- read.csv("meteo.test.csv")
+summary(x_train)
+```
+
+```{r}
+boxplot(x_train, horizontal = T)
+```
+
+
+
+Remarques:
+- Toutes les variables sont numeriques, seule la variable d'interet est binaire
+- On pourrait scaler les variables numeriques car certaines sont tres grandes.
+- Certaines variables peuvent être écartées d'emblée: Hour et Minute qui sont constants
+- On pourrait introduire des features pour saisonnaliser (X modulo 365)
+- Si on garde le compteur, on capture d'une certaine façon la distance a la derniere pluie
+
+Dans la suite nous restons dans le cadre simple de garder toutes les features sauf Hour/Minute et sans transformation.
+
+
+```{r}
+colnames(x_train)
+```
+
+
+# Correlations
+
+Analysons les correlations de potentielles variables explicatives à la variable reponse (variable numero 47).
+
+```{r}
+#correl_response <- cor(x_train[, 47], x_train[, c(1:5, 7:46)])
+correl_response <- cor(x_train[, 47], x_train[, 7:46])
+
+hist(correl_response)
+```
+
+```{r}
+max(correl_response)
+colnames(x_train)[which.max(correl_response)]
+
+min(correl_response)
+colnames(x_train)[which.min(correl_response)]
+
+min(abs(correl_response))
+colnames(x_train)[which.min(abs(correl_response))]
+
+```
+
+
+```{r}
+cor(x_train[, 47], x_train[, 3])
+```
+La correlation avec le mois est tres faible. Cela ne vaut pas la peine de poursuivre en creant par exemple une variable jour dans l'annee à partir du mois et du jour.
+
+```{r}
+cor(x_train[, 47], x_train[, 1] %% 365)
+```
+La correlation plus fine en prenant une saisonnalite annuelle est encore plus basse en valeur absolue.
+
+Essayons d'analyser des groupes de variables homogenes en face de la variable reponse.
+
+```{r}
+var_reponse <- select(x_train, contains("pluie.demain"))
+corrplot(cor( cbind( select(x_train, contains("Wind.Speed")), var_reponse ) ), type = "lower")
+```
+
+
+```{r}
+corrplot(cor( cbind( select(x_train, contains("Wind.Speed")), var_reponse) ), type = "lower")
+```
+```{r}
+corrplot(cor( cbind( select(x_train, contains("Cloud.Cover")), var_reponse) ), type = "lower")
+```
+Conclusion: 
+- sans suprise, les variables homogenes en terme de mesure sont fortement corrélées linéairement entre elles.
+- on devra donc faire attention aux collinearites et retenir a priori une seule variable par groupe
+- les correlations a la variable reponse sont relativement faibles mais la variable etant binaire et non une probabilite, cela semble logique.
+
+
+# Proposition de modeles
+
+On peut partir des plus fortes correlations et de la fonction de lien par défaut. A priori on ne voit pas vraiment pourquoi il y aurait une et une seule variable cachée qui legitimerait un probit.
+
+```{r}
+link = 'logit'
+m1 <- glm(pluie.demain ~ Mean.Sea.Level.Pressure.daily.mean..MSL. 
+          + Total.Cloud.Cover.daily.mean..sfc. 
+          + Wind.Gust.daily.mean..sfc. , 
+          data=x_train, family=binomial(link = link))
+summary(m1)
+```
+Un ajustement avec probit donne un AIC quasi identique (1404.7).
+
+On peut regarder le modele sature (sans les variables d'identification du sample), son AIC est bien plus bas.
+
+```{r}
+m_sat = glm(pluie.demain ~ . -Hour -Minute, data=x_train, family=binomial(link=link))
+summary(m_sat)
+```
+
+On observe que de tres nombreuses variables du modele sature sont non significatives à 5% par rapport au modele nul 
+
+L'ecart de pression semble avoir son importance, il n'y a pas report d'une variable sur l'autre.
+
+Retenons les variables les plus significatives:
+Mean.Sea.Level.Pressure.daily.mean..MSL.
+Wind.Direction.daily.mean..900.mb.
+Wind.Speed.daily.min..10.m.above.gnd.
+Mean.Sea.Level.Pressure.daily.max..MSL.
+Mean.Sea.Level.Pressure.daily.min..MSL.
+
+Dand ce cas on a un meilleur AIC que par le premier modele mais on fait moins bien que le modele sature.
+
+```{r}
+m2 = glm(pluie.demain ~ Mean.Sea.Level.Pressure.daily.mean..MSL.
+      + Wind.Direction.daily.mean..900.mb.
+      + Wind.Speed.daily.min..10.m.above.gnd.
+      + Mean.Sea.Level.Pressure.daily.max..MSL.
+      + Mean.Sea.Level.Pressure.daily.min..MSL., 
+         data=x_train, family=binomial(link=link))
+summary(m2)
+```
+Pour trancher sur la validite d'un modele, on peut aussi se situer par rapport aux modeles nuls et complets.  
+
+```{r}
+m3 = glm(pluie.demain ~ Mean.Sea.Level.Pressure.daily.mean..MSL.
+         + Wind.Direction.daily.mean..900.mb.
+         + Wind.Speed.daily.min..10.m.above.gnd., 
+         data=x_train, 
+         family=binomial(link=link))
+```
+
+ Null deviance: 1635.4  on 1179  degrees of freedom
+Residual deviance: 1381.3  on 1174  degrees of freedom
+AIC: 1393.3
+
+```{r}
+pchisq(1635.4 - 1381.3, 1179 - 1174, lower = F)
+```
+On obtient une p-valeur très faible : on rejette le modèle sans covariable. Notre modèle est donc utile.
+
+Comparons maintenant notre modèle au modèle saturé
+
+
+```{r}
+pchisq(1381.3, 1174, lower = F)
+```
+
+Là aussi, la p-valeur est faible : on rejette donc notre modèle et on préfère le modèle saturé. Autrement dit, notre modèle n'est pas suffisant.
+
+# Cherchons maintenant le meilleur modèle de manière automatique
+
+regsubsets du package leaps fait des recherches exhaustives mais sur des modeles lineaires.
+On peut utiliser le package bestglm pour cela mais elle se limite a 15 variables
+
+```{r}
+cols = c(
+  "Mean.Sea.Level.Pressure.daily.mean..MSL.",
+  "Wind.Direction.daily.mean..900.mb.",
+  "Wind.Speed.daily.min..10.m.above.gnd.",
+  "Mean.Sea.Level.Pressure.daily.max..MSL.",
+  "Mean.Sea.Level.Pressure.daily.min..MSL.",
+  
+  "Total.Cloud.Cover.daily.mean..sfc.",
+  "Medium.Cloud.Cover.daily.max..mid.cld.lay.",
+  "Wind.Gust.daily.mean..sfc.",
+  "Wind.Direction.daily.mean..80.m.above.gnd.",
+  "Wind.Speed.daily.max..10.m.above.gnd.",
+  "Temperature.daily.min..2.m.above.gnd.",
+  "X",
+  "Year",
+  "Month",
+  "pluie.demain"
+)
+
+col_ids <- rep(0, times=length(cols))
+for (i in 1:length(cols)) {
+  col_ids[i] = which(colnames(x_train) == cols[i])
+}
+
+length(col_ids)
+col_ids
+```
+
+
+
+```{r}
+library(bestglm)
+bglm <- bestglm(Xy = x_train[, c(col_ids)], family=binomial, IC="AIC", TopModels=4, nvmax=15)
+```
+
+```{r}
+summary(bglm$BestModel)
+```
+
+On ne print pas les etapes intermediaires.
+
+```{r}
+m_star = step(glm(pluie.demain ~ . -Hour -Minute, data = x_train, family = binomial), trace=0, direction="both")
+summary(m_star)
+```
+
+On remarque que le modele conserve la difference de pression. La convergence a été assez rapide avec seulement 4 iterations.
+
+On peut regarder les deviances:
+
+Null deviance: 1635.4  on 1179  degrees of freedom
+Residual deviance: 1247.3  on 1162  degrees of freedom
+
+Faisons le test du Khi2 entre notre modele et le modele nul:
+
+```{r}
+pchisq(1635.4 - 1247.3, 1179 - 1162, lower = F)
+```
+C'est trés bas, on rejette donc le modele nul en faveur de notre modele.
+
+Examinons maintenant la deviance residuelle par rapport au modele complet:
+
+```{r}
+pchisq(1247.3, 1162, lower = F)
+```
+La p valeur est relativement elevée mais tout de même inferieure â 5%, on est donc relativement incertain avec notre modele, on explique clairement pas toutes les variations.
+
+
+```{r}
+anova(m_star, bglm$BestModel, test="LRT")
+```
+Par rapport a notre selection de 15 variables, on observe que le step rajoute de facon convainquante un grand nombre de variables.
+
+On choisit donc de rester sur ce modele determine par step ascendant et descendant en AIC.
+On aurait pu evaluer sur d'autres criteres mais la parcimonie ne donnait pas de tres bons resultats et ici on est plus interesse par les predictions que par l'explicabilite. On ne prendra donc par un modele optimise par BIC qui penalise davantage le nb de variables.
+
+## Selection par Cross validation sur les données train
+
+Sur notre modele selectionne, on va se poser la question du seuil de decision.
+On peut se poser aussi la question de customiser la loss, la reponse est-elle equilibrée ?
+
+```{r}
+mean(x_train$pluie.demain == T)
+```
+C'est tres equilibre, on peut donc conserver une fonction de cout symetrique entre faux positifs et faux negatifs.
+Ecrivons une fonction de cross validation pour obtenir une precision, on ne privilegie pas un type d'erreur à l'autre.
+
+```{r}
+cross_val <- function (d, formula, variable="pluie.demain", threshold=.5, k=10, link="logit") {
+  index = sample(1:k, nrow(d), replace=T)
+  precision = rep(NA, k)
+  
+  for(i in 1:k){
+    reg.logistique = glm(
+      formula,
+      family = binomial(link=link),
+      data = d[index != i, ]
+    )
+    
+    pred.logistique = predict(reg.logistique, newdata=d[index == i, ], type="response")
+    precision[i] = mean(d[index==i, variable] == (pred.logistique > threshold), na.rm = T)
+  }
+  
+  return(precision)
+}
+```
+
+Ci-dessous une version pour tester differents thresholds
+
+
+```{r}
+
+cross_val2 <- function (d, formula, variable="pluie.demain", thresholds=c(.5), k=10, link="logit", seed=123) {
+  set.seed(seed)
+  index = sample(1:k, nrow(d), replace=T)
+  precision = array( rep(NA, k * length(thresholds)), dim= c(length(thresholds), k) )
+
+  for(i in 1:k){
+    reg.logistique = glm(
+      formula,
+      family = binomial(link=link),
+      data = d[index != i, ]
+    )
+    
+    pred.logistique = predict(reg.logistique, newdata=d[index == i, ], type="response")
+    
+    for(j in 1:length(thresholds)) {
+      threshold <- thresholds[j]
+      precision[j, i] = mean(d[index==i, variable] == (pred.logistique > threshold), na.rm = T)
+    }
+  }
+  
+  return(precision)
+}
+```
+
+Voici les precisions pour un seuil par defaut de 0.5
+
+```{r}
+res05 <- cross_val(x_train, formula=m_star$formula)
+res05
+```
+Regardons d'autres seuils autour de cette valeur
+
+```{r}
+thresholds = c(.4, .45, .5, .54, .55, .56, .57, .6)
+res2 <- cross_val2(x_train, formula=m_star$formula, thresholds = thresholds)
+round(res2, 4)
+```
+
+
+```{r}
+for(i in 1:length(thresholds)) {
+  print(thresholds[i])
+  print(round(mean(res2[i,]), 4))
+}
+```
+
+```{r}
+res2 <- cross_val2(x_train, formula=m_star$formula, thresholds = thresholds, seed=456)
+round(res2, 4)
+for(i in 1:length(thresholds)) {
+  print(thresholds[i])
+  print(round(mean(res2[i,]), 4))
+}
+```
+
+En pratique on observe que le resultat n'est pas tres stable d'un sampling a un autre, mais un seuil legerement superieur à 0.5 semble meilleur. Prenons 0.55 pour nos predictions.
+
+
+## Prediction
+
+```{r}
+pred = predict(m_star, new=x_test, type="response", se.fit=T)
+pluie.demain = (pred$fit >= 0.55)
+mean(pluie.demain)
+```
+La moyenne des predictions est plutot coherente avec la meme metrique in sample, ce qui est plutot bon signe
+
+```{r}
+x_test2 <- cbind(x_test, pluie.demain)
+```
+
+
+```{r, warning=F}
+setwd(data_dir)
+write.csv(x_test2, file="meteo.test.predict.csv")
+```
+
